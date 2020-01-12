@@ -1,6 +1,11 @@
+#include <FS.h>
+#include <ArduinoJson.h>
+
+
 #include <jled.h>
 #include "HX711.h"
 #include <ESP8266WiFi.h>
+
 
 
 #define pin_sck 4
@@ -22,8 +27,8 @@ byte led_ack = pin_green;
 
 char server_ip[40] = {};
 char server_port[10] = {};
-char ssid[32] = {};
-char pass[64] = {};
+char ssid[32] = {""};
+char pass[64] = {""};
 
 float cal_factor = 0;
 int dec_places = 2;
@@ -42,76 +47,8 @@ unsigned int time_zero = 0;
 unsigned int cycles = 0;
 unsigned int old_cycles = 0;
 
-int flag_connect = 0;
 
-
-
-
-/*bool loadConfig() {
-  File configFile = SPIFFS.open("/config.json", "r");
-  if (!configFile) {
-    Serial.println("Failed to open config file");
-    return false;
-  }
-
-  StaticJsonDocument<512> doc;
-
-  // Deserialize the JSON document
-  DeserializationError error = deserializeJson(doc, configFile);
-
-  if (error)
-    Serial.println(F("Failed to read file, using default configuration"));
-
-  // Copy values from the JsonDocument to the Config
-  dec_places = doc["dec_places"];
-  freq_ping = doc["freq_ping"];
-  dur_ping = doc["dur_ping"];
-  freq_sample = doc["freq_sample"];
-  num_samples = doc["num_samples"];
-  cal_factor = doc["cal_factor"];
-  strlcpy(server_ip,                  // <- destination
-          doc["server"],  // <- source
-          sizeof(server_ip));         // <- destination's capacity
-  strlcpy(server_port,                  // <- destination
-          doc["port"],  // <- source
-          sizeof(server_port));         // <- destination's capacity
-  flag_connect = doc["flag_connect"];
-  scale.set_scale(cal_factor);
-
-  // Close the file (Curiously, File's destructor doesn't close the file)
-  configFile.close();
-  }*/
-
-
-/*bool saveConfig() {
-
-  File configFile = SPIFFS.open("/config.json", "w");
-  if (!configFile) {
-    Serial.println("Failed to open config file for writing");
-    return false;
-  }
-
-  StaticJsonDocument<512> doc;
-
-  // Set the values in the document
-  doc["server"] = server_ip;
-  doc["port"] = server_port;
-  doc["dec_places"] = dec_places;
-  doc["freq_ping"] = freq_ping;
-  doc["dur_ping"] = dur_ping;
-  doc["freq_sample"] = freq_sample;
-  doc["num_samples"] = num_samples;
-  doc["cal_factor"] = cal_factor;
-  doc["flag_connect"] = flag_connect;
-
-  // Serialize JSON to file
-  if (serializeJson(doc, configFile) == 0) {
-    Serial.println(F("Failed to write to file"));
-  }
-
-  // Close the file
-  configFile.close();
-  }*/
+char buffer_serial[buffer_serial_size];
 
 void setup() {
 
@@ -125,81 +62,104 @@ void setup() {
   digitalWrite(pin_led, LOW);
   Serial.begin(115200);
 
-  /*  if (!SPIFFS.begin()) {
-      Serial.println("Failed to mount file system");
-      return;
-    }
-
-    loadConfig();
-    if (flag_connect == 1)
-    {
-      flag_connect = 0;
-      wifiManager.resetSettings();
-      Serial.println("Resettig Settings");
-      WiFiManagerParameter custom_server_ip("Server Ip", "Server Ip", server_ip, 40);
-      WiFiManagerParameter custom_server_port("Server Port", "Server Port", server_port, 10);
-      wifiManager.addParameter(&custom_server_ip);
-      wifiManager.addParameter(&custom_server_port);
-      digitalWrite(led_ping_pin, HIGH);
-      delay(100);
-      wifiManager.autoConnect();
-      digitalWrite(led_ack, HIGH);
-      delay(500);
-      strcpy(server_ip, custom_server_ip.getValue());
-      strcpy(server_port, custom_server_port.getValue());
-      saveConfig();
-    }
-    else if (flag_connect == 0)
-    {
-      wifiManager.autoConnect();
-    }*/
-
-
-
-
-
-  scale.begin(pin_dt, pin_sck);
-  char buffer_serial[buffer_serial_size];
-
-  wifi_param();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, pass);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  if (!SPIFFS.begin()) {
+    Serial.println("Failed to mount file system");
+    return;
   }
 
+  loadConfig();
 
+  scale.begin(pin_dt, pin_sck);
 
-
-
+  WiFi.setAutoConnect(false);
+  WiFi.mode(WIFI_STA);
 
 }
 
 void loop() {
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    yield();
+    Serial.print("Connecting to SSID:");
+    Serial.print(ssid);
+    Serial.print(" Pass:");
+    Serial.print(pass);
+    Serial.println(" send ser to interrupt and enter serial config.");
+
+    WiFi.begin(ssid, pass);
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      yield();
+      Serial.print(".");
+      delay(500);
+      if (Serial.available())
+      {
+        WiFi.disconnect();
+        break;
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.println("WiFi connected.");
+      break;
+    }
+
+    if (Serial.available() >= 3)
+    {
+      Serial.readBytesUntil('\n', buffer_serial, buffer_serial_size);
+      if (buffer_serial[0] == 's' && buffer_serial[1] == 'e' && buffer_serial[2] == 'r') //ser starting the TCP/IP and WIFI configuration through Serial
+      {
+        wifi_param();
+      }
+    }
+  }
+
+
+
   WiFiClient client;
-  Serial.print("connecting to ");
-  Serial.print(server_ip);
-  Serial.print(':');
-  Serial.println(server_port);
-
-  while (!client.connect(server_ip, atoi(server_port)))
+  while (!client.connected())
   {
-    Serial.println("connection failed");
-    digitalWrite(pin_red, HIGH);
-    delay(1000);
-    digitalWrite(pin_red, LOW);
-    delay(2000);
+    yield();
+    Serial.print("Connecting to Server:");
+    Serial.print(server_ip);
+    Serial.print(" Port:");
+    Serial.println(server_port);
+
+    while (!client.connected())
+    {
+      client.connect(server_ip, atoi(server_port));
+      Serial.print(".");
+      delay(500);
+      if (Serial.available())
+      {
+        break;
+      }
+    }
+    if (client.connected())
+    {
+      Serial.println("Connection to server established.");
+      client.setNoDelay(true);
+      break;
+    }
+
+    if (Serial.available() >= 3)
+    {
+      Serial.readBytesUntil('\n', buffer_serial, buffer_serial_size);
+      if (buffer_serial[0] == 's' && buffer_serial[1] == 'e' && buffer_serial[2] == 'r') //ser starting the TCP/IP and WIFI configuration through Serial
+      {
+        wifi_param();
+        client.stop();
+      }
+    }
   }
 
-  if (client.connected())
-  {
-    client.setNoDelay(true);
-  }
 
   while (client.connected())
   {
+    yield();
     if (client.available() >= 3)
     {
       char buffer_serial[buffer_serial_size];
@@ -219,9 +179,12 @@ void loop() {
         float cal_weight = 0;
         client.print("ack#");
         while (client.available() == 0)
-        {}
+        {
+          yield();
+        }
         while (client.available() != 0)
         {
+          yield();
           client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
           cal_weight = atof(buffer_serial);
         }
@@ -238,9 +201,12 @@ void loop() {
       {
         client.print("ack#");
         while (client.available() == 0)
-        {}
+        {
+          yield();
+        }
         while (client.available() != 0)
         {
+          yield();
           client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
           dec_places = atoi(buffer_serial);
           Serial.println(dec_places);
@@ -279,9 +245,12 @@ void loop() {
       {
         client.print("ack#");
         while (client.available() == 0)
-        {}
+        {
+          yield();
+        }
         while (client.available() != 0)
         {
+          yield();
           client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
           freq_ping = atoi(buffer_serial);
         }
@@ -291,9 +260,12 @@ void loop() {
       {
         client.print("ack#");
         while (client.available() == 0)
-        {}
+        {
+          yield();
+        }
         while (client.available() != 0)
         {
+          yield();
           client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
           dur_ping = atoi(buffer_serial);
         }
@@ -326,9 +298,12 @@ void loop() {
       {
         client.print("ack#");
         while (client.available() == 0)
-        {}
+        {
+          yield();
+        }
         while (client.available() != 0)
         {
+          yield();
           client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
           //Serial.print(buffer_serial);
           num_samples = atoi(buffer_serial);
@@ -354,11 +329,7 @@ void loop() {
 
     if (stat_poll == 1)
     {
-
       cycles = micros() - old_cycles;
-      /*Serial.print(cycles);
-        Serial.print(":");
-        Serial.println(freq_sample);*/
       if (cycles >= freq_sample)
       {
         if (scale.is_ready())
@@ -411,22 +382,37 @@ void loop() {
       }
     }
 
+    if (Serial.available() >= 3)
+    {
+      wifi_param();
+    }
+
+    yield();
   }
 }
 
 void wifi_param()
 {
-  bool test = 1;
   char buffer_command[10] = {};
   int buffer_command_size = 10;
   bool setup_loop = 0;
   auto led = JLed(led_ping_pin).Breathe(2000).Forever();
+  Serial.print("SSID:");
+  Serial.println(ssid);
+  Serial.print("Pass:");
+  Serial.println(pass);
+  Serial.print("Server IP:");
+  Serial.println(server_ip);
+  Serial.print("Port:");
+  Serial.println(server_port);
   while (setup_loop == 0)
   {
+    yield();
     Serial.println("Wating for command.");
     while (Serial.available() == 0)
     {
       led.Update();
+      yield();
     }
     auto led = JLed(led_ping_pin).Off().Forever().Update();
     Serial.readBytesUntil('\n', buffer_command, buffer_command_size);
@@ -436,28 +422,31 @@ void wifi_param()
       Serial.print("ack, awaiting SSID");
       while (Serial.available() == 0)
       {
-
+        yield();
       }
-      Serial.readBytesUntil('\n', ssid, 32);
+      int number_of_bytes_received = Serial.readBytesUntil('\n', ssid, 32);
+      ssid[number_of_bytes_received] = 0; // add a 0 terminator to the char array
       Serial.print("ack, SSID:");
       Serial.println(ssid);
     }
     else if (buffer_command[0] == 'p' && buffer_command[1] == 'a' && buffer_command[2] == 's') //pas Pass for WIFI
     {
-      Serial.print("ack");
+      Serial.print("ack, awaiting Wifi pass.");
       while (Serial.available() == 0)
       {
-
+        yield();
       }
-      Serial.readBytesUntil('\n', pass, 64);
-      Serial.print("ack");
+      int number_of_bytes_received = Serial.readBytesUntil('\n', pass, 64);
+      pass[number_of_bytes_received] = 0; // add a 0 terminator to the char array
+      Serial.print("ack, Pass:");
+      Serial.println(pass);
     }
     else if (buffer_command[0] == 'p' && buffer_command[1] == 'o' && buffer_command[2] == 'r') //por port number
     {
       Serial.print("ack, awaiting server port\n");
       while (Serial.available() == 0)
       {
-
+        yield();
       }
       Serial.readBytesUntil('\n', server_port, 10);
       Serial.print("ack, Port number:");
@@ -469,7 +458,7 @@ void wifi_param()
       Serial.print("ack, awaiting server IP\n");
       while (Serial.available() == 0)
       {
-
+        yield();
       }
       Serial.readBytesUntil('\n', server_ip, 40);
       Serial.print("ack, Server IP:");
@@ -479,16 +468,84 @@ void wifi_param()
     else if (buffer_command[0] == 's' && buffer_command[1] == 'a' && buffer_command[2] == 'v') //sav saving settings to non-volatile memory
     {
       Serial.print("ack, saving setup configuration\n");
-      while (Serial.available() == 0)
-      {
-
-      }
-      //saving routine
+      saveConfig();
       Serial.print("setup configuration saved");
     }
     else if (buffer_command[0] == 's' && buffer_command[1] == 'r' && buffer_command[2] == 't') //srt starts with the configuration
     {
       setup_loop = 1;
+
     }
   }
+}
+
+bool loadConfig() {
+  File configFile = SPIFFS.open("/config.json", "r");
+  if (!configFile) {
+    Serial.println("Failed to open config file");
+    return false;
+  }
+
+  StaticJsonDocument<512> doc;
+
+  // Deserialize the JSON document
+  DeserializationError error = deserializeJson(doc, configFile);
+
+  if (error)
+    Serial.println(F("Failed to read file, using default configuration"));
+
+  // Copy values from the JsonDocument to the Config
+  strlcpy(ssid,                  // <- destination
+          doc["wifi_ssid"],  // <- source
+          sizeof(ssid));         // <- destination's capacity
+  strlcpy(pass,                  // <- destination
+          doc["wifi_pass"],  // <- source
+          sizeof(pass));         // <- destination's capacity
+  dec_places = doc["dec_places"];
+  freq_ping = doc["freq_ping"];
+  dur_ping = doc["dur_ping"];
+  freq_sample = doc["freq_sample"];
+  num_samples = doc["num_samples"];
+  cal_factor = doc["cal_factor"];
+  strlcpy(server_ip,                  // <- destination
+          doc["server"],  // <- source
+          sizeof(server_ip));         // <- destination's capacity
+  strlcpy(server_port,                  // <- destination
+          doc["port"],  // <- source
+          sizeof(server_port));         // <- destination's capacity
+  scale.set_scale(cal_factor);
+
+  // Close the file (Curiously, File's destructor doesn't close the file)
+  configFile.close();
+}
+
+
+bool saveConfig() {
+  File configFile = SPIFFS.open("/config.json", "w");
+  if (!configFile) {
+    Serial.println("Failed to open config file for writing");
+    return false;
+  }
+
+  StaticJsonDocument<512> doc;
+
+  // Set the values in the document
+  doc["wifi_ssid"] = ssid;
+  doc["wifi_pass"] = pass;
+  doc["server"] = server_ip;
+  doc["port"] = server_port;
+  doc["dec_places"] = dec_places;
+  doc["freq_ping"] = freq_ping;
+  doc["dur_ping"] = dur_ping;
+  doc["freq_sample"] = freq_sample;
+  doc["num_samples"] = num_samples;
+  doc["cal_factor"] = cal_factor;
+
+  // Serialize JSON to file
+  if (serializeJson(doc, configFile) == 0) {
+    Serial.println(F("Failed to write to file"));
+  }
+
+  // Close the file
+  configFile.close();
 }
