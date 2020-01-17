@@ -1,12 +1,10 @@
 #include <FS.h>
 #include <ArduinoJson.h>
 
-
-#include <jled.h>
 #include "HX711.h"
 #include <ESP8266WiFi.h>
 
-
+#define firmware_version "1.0"
 
 #define pin_sck 4
 #define pin_dt 5
@@ -40,12 +38,15 @@ int dur_ping = 20;
 float measurement = 0;
 byte stat_poll = 1;
 byte stat_ping = 0;
+bool b_debug = 0;
 unsigned int ping_time = 0;
 unsigned int ping_time_old = 0;
 unsigned int time_zero = 0;
 
 unsigned int cycles = 0;
 unsigned int old_cycles = 0;
+
+bool wifi_change = 0;
 
 
 char buffer_serial[buffer_serial_size];
@@ -78,9 +79,29 @@ void setup() {
 
 void loop() {
 
-  while (WiFi.status() != WL_CONNECTED)
+  while (WiFi.status() != WL_CONNECTED || wifi_change == 1)
   {
-    yield();
+    WiFi.disconnect();
+    delay(100);
+
+    Serial.print("MAC:");
+    Serial.print(WiFi.macAddress());
+    Serial.print("\n");
+    int n = WiFi.scanNetworks();
+    Serial.print("\n\nAvailable networks:\n");
+    for (int i = 0; i < n; i++)
+    {
+      Serial.print("SSID:");
+      Serial.print(WiFi.SSID(i));
+      Serial.print("  ");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print("dBm\n");
+    }
+
+    digitalWrite(led_ping_pin, HIGH);
+    digitalWrite(led_error, HIGH);
+    digitalWrite(led_ack, HIGH);
+
     Serial.print("Connecting to SSID:");
     Serial.print(ssid);
     Serial.print(" Pass:");
@@ -103,7 +124,9 @@ void loop() {
 
     if (WiFi.status() == WL_CONNECTED)
     {
-      Serial.println("WiFi connected.");
+      Serial.println("ack, WiFi connected.");
+      digitalWrite(led_ack, LOW);
+      wifi_change = 0;
       break;
     }
 
@@ -112,6 +135,7 @@ void loop() {
       Serial.readBytesUntil('\n', buffer_serial, buffer_serial_size);
       if (buffer_serial[0] == 's' && buffer_serial[1] == 'e' && buffer_serial[2] == 'r') //ser starting the TCP/IP and WIFI configuration through Serial
       {
+        Serial.print('\n');
         wifi_param();
       }
     }
@@ -120,16 +144,18 @@ void loop() {
 
 
   WiFiClient client;
-  while (!client.connected())
+  while (!client.connected() && wifi_change == 0)
   {
     yield();
     Serial.print("Connecting to Server:");
     Serial.print(server_ip);
     Serial.print(" Port:");
     Serial.println(server_port);
-
+    digitalWrite(led_ping_pin, HIGH);
+    digitalWrite(led_error, HIGH);
     while (!client.connected())
     {
+      yield();
       client.connect(server_ip, atoi(server_port));
       Serial.print(".");
       delay(500);
@@ -140,7 +166,9 @@ void loop() {
     }
     if (client.connected())
     {
-      Serial.println("Connection to server established.");
+      digitalWrite(led_ping_pin, LOW);
+      digitalWrite(led_error, LOW);
+      Serial.println("ack, Connection to server established.");
       client.setNoDelay(true);
       break;
     }
@@ -150,8 +178,13 @@ void loop() {
       Serial.readBytesUntil('\n', buffer_serial, buffer_serial_size);
       if (buffer_serial[0] == 's' && buffer_serial[1] == 'e' && buffer_serial[2] == 'r') //ser starting the TCP/IP and WIFI configuration through Serial
       {
+        Serial.print('\n');
         wifi_param();
         client.stop();
+        if (wifi_change == 1)
+        {
+          break;
+        }
       }
     }
   }
@@ -168,12 +201,14 @@ void loop() {
         buffer_serial[i] = 0;
       }
       client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
+      
       if (buffer_serial[0] == 't' && buffer_serial[1] == 'a' && buffer_serial[2] == 'r') //taring the scale
       {
         Serial.println(buffer_serial);
         scale.tare();
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'c' && buffer_serial[1] == 'a' && buffer_serial[2] == 'l') //calibrating
       {
         float cal_weight = 0;
@@ -197,6 +232,7 @@ void loop() {
         //saveConfig();
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'd' && buffer_serial[1] == 'e' && buffer_serial[2] == 'c')
       {
         client.print("ack#");
@@ -214,33 +250,44 @@ void loop() {
         }
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 's' && buffer_serial[1] == 'e' && buffer_serial[2] == 't')
       {
         scale.set_scale();
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'b' && buffer_serial[1] == 'l' && buffer_serial[2] == 'k')
       {
         digitalWrite(led_ping_pin, HIGH);
         delay(200);
         digitalWrite(led_ping_pin, LOW);
       }
+
       else if (buffer_serial[0] == 'p' && buffer_serial[1] == 'o' && buffer_serial[2] == 'e')//poe enables polling
       {
         stat_poll = 1;
         client.print("ack#");
       }
+
+      else if (buffer_serial[0] == 'd' && buffer_serial[1] == 'e' && buffer_serial[2] == 'b')//poe enables polling
+      {
+        b_debug = b_debug ^ 0x01;
+        client.print("ack#");
+      }
+
       else if (buffer_serial[0] == 'p' && buffer_serial[1] == 'o' && buffer_serial[2] == 'd')//pod disables polling
       {
         stat_poll = 0;
         client.print("ack#");
-        Serial.println("pod ack");
       }
+
       else if (buffer_serial[0] == 'p' && buffer_serial[1] == 'i' && buffer_serial[2] == 'g') //enable blink
       {
         stat_ping = stat_ping ^ 0x01;
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'f' && buffer_serial[1] == 'p' && buffer_serial[2] == 'n')//
       {
         client.print("ack#");
@@ -256,6 +303,7 @@ void loop() {
         }
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'd' && buffer_serial[1] == 'p' && buffer_serial[2] == 'n')
       {
         client.print("ack#");
@@ -271,11 +319,9 @@ void loop() {
         }
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'f' && buffer_serial[1] == 's' && buffer_serial[2] == 'm')
       {
-        Serial.println("ready for setting samplerate");
-        Serial.print(buffer_serial);
-        Serial.print("//");
         client.print("ack#");
         while (client.available() == 0)
         {
@@ -283,17 +329,14 @@ void loop() {
         }
         client.readBytesUntil('\n', buffer_serial, buffer_serial_size);
         long long_buffer;
-        Serial.print(buffer_serial);
-        Serial.print("//");
         long_buffer = atol(buffer_serial);
-        Serial.println(long_buffer);
         freq_sample = (unsigned int) long_buffer;
 
         //buffer_serial[0] = '\0';
         //saveConfig();
         client.print("ack#");
-
       }
+
       else if (buffer_serial[0] == 'n' && buffer_serial[1] == 's' && buffer_serial[2] == 'm')
       {
         client.print("ack#");
@@ -312,18 +355,61 @@ void loop() {
         }
         client.print("ack#");
       }
+
       else if (buffer_serial[0] == 'z' && buffer_serial[1] == 'e' && buffer_serial[2] == 'r')
       {
         time_zero = millis();
         old_cycles = micros();
       }
-      else if (buffer_serial[0] == 's' && buffer_serial[1] == 'a' && buffer_serial[2] == 'v')
-      {
 
+      else if (buffer_serial[0] == 's' && buffer_serial[1] == 'a' && buffer_serial[2] == 'v') //sav   stores all thevariables to non volatile memory
+      {
+        saveConfig();
+        client.print("ack#");
       }
+
+      else if (buffer_serial[0] == 'l' && buffer_serial[1] == 'o' && buffer_serial[2] == 'd')// lod   prints the momentary configuaration to the server - non-volative memory is ignored
+      {
+        client.print("Firmware:");
+        client.print(firmware_version);
+        client.print(":\n");
+        client.print("Decimals:");
+        client.print(dec_places);
+        client.print(":\n");
+        client.print("Calibration Factor:");
+        client.print(cal_factor);
+        client.print(":\n");
+        client.print("Sampling averages:");
+        client.print(num_samples);
+        client.print(":\n");
+        client.print("Samplerate:");
+        client.print(freq_sample);
+        client.print(":ms\n");
+        client.print("Decimals:");
+        client.print(dec_places);
+        client.print(":\n");
+        client.print("Period Blink:");
+        client.print(freq_ping);
+        client.print(":ms\n");
+        client.print("Duration Blink:");
+        client.print(dur_ping);
+        client.print(":\n");
+        client.print("Decimals:");
+        client.print(dec_places);
+        client.print(":\n");
+        client.print("MAC:");
+        client.print(WiFi.macAddress());
+        client.print(":\n");
+        client.print("IP:");
+        client.print(WiFi.localIP());
+        client.print(":\n");
+        client.print("ack#");
+      }
+
       else
       {
         client.print("inv#");
+        client.print(buffer_serial);
       }
     }
 
@@ -385,6 +471,7 @@ void loop() {
     if (Serial.available() >= 3)
     {
       wifi_param();
+      break;
     }
 
     yield();
@@ -396,7 +483,7 @@ void wifi_param()
   char buffer_command[10] = {};
   int buffer_command_size = 10;
   bool setup_loop = 0;
-  auto led = JLed(led_ping_pin).Breathe(2000).Forever();
+
   Serial.print("SSID:");
   Serial.println(ssid);
   Serial.print("Pass:");
@@ -405,16 +492,15 @@ void wifi_param()
   Serial.println(server_ip);
   Serial.print("Port:");
   Serial.println(server_port);
+  Serial.print("Commands: \n sid: SSID \n pas: Passphrase \n sip: Server IP \n por: Server port \n");
   while (setup_loop == 0)
   {
     yield();
     Serial.println("Wating for command.");
     while (Serial.available() == 0)
     {
-      led.Update();
       yield();
     }
-    auto led = JLed(led_ping_pin).Off().Forever().Update();
     Serial.readBytesUntil('\n', buffer_command, buffer_command_size);
 
     if (buffer_command[0] == 's' && buffer_command[1] == 'i' && buffer_command[2] == 'd') //sid SSID for wifi
@@ -426,18 +512,20 @@ void wifi_param()
       }
       int number_of_bytes_received = Serial.readBytesUntil('\n', ssid, 32);
       ssid[number_of_bytes_received] = 0; // add a 0 terminator to the char array
+      wifi_change = 1;
       Serial.print("ack, SSID:");
       Serial.println(ssid);
     }
     else if (buffer_command[0] == 'p' && buffer_command[1] == 'a' && buffer_command[2] == 's') //pas Pass for WIFI
     {
-      Serial.print("ack, awaiting Wifi pass.");
+      Serial.print("ack, awaiting Wifi pass.\n");
       while (Serial.available() == 0)
       {
         yield();
       }
       int number_of_bytes_received = Serial.readBytesUntil('\n', pass, 64);
       pass[number_of_bytes_received] = 0; // add a 0 terminator to the char array
+      wifi_change = 1;
       Serial.print("ack, Pass:");
       Serial.println(pass);
     }
@@ -469,12 +557,11 @@ void wifi_param()
     {
       Serial.print("ack, saving setup configuration\n");
       saveConfig();
-      Serial.print("setup configuration saved");
+      Serial.print("setup configuration saved\n");
     }
     else if (buffer_command[0] == 's' && buffer_command[1] == 'r' && buffer_command[2] == 't') //srt starts with the configuration
     {
       setup_loop = 1;
-
     }
   }
 }
